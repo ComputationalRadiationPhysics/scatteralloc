@@ -25,17 +25,6 @@ Original Homepage: http://www.icg.tugraz.at/project/mvp
 Our Homepage: https://www.hzdr.de/crp
 
 
-About This Repository
----------------------
-
-This repository is a clone of the **ScatterAlloc** project from the
-[Managed Volume Processing](http://www.icg.tugraz.at/project/mvp)
-group at [Institute for Computer Graphics and Vision](http://www.icg.tugraz.at),
-TU Graz (kudos!).
-
-We fixed minor bugs in this repository.
-
-
 Further Development
 -------------------
 
@@ -46,6 +35,17 @@ of this project: [mallocMC](https://github.com/ComputationalRadiationPhysics/mal
 **mallocMC** includes a major redesign of the library.
 Starting from a policy based design for general memory pools, we implemented a whole new environment and plenty of features.
 Of course, the *scatterAlloc* algorithm is implemented, too.
+
+
+About This Repository
+---------------------
+
+This repository is a clone of the **ScatterAlloc** project from the
+[Managed Volume Processing](http://www.icg.tugraz.at/project/mvp)
+group at [Institute for Computer Graphics and Vision](http://www.icg.tugraz.at),
+TU Graz (kudos!).
+
+We fixed minor bugs in this repository.
 
 
 Literature

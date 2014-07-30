@@ -229,6 +229,7 @@ namespace GPUTools
      */
     __device__ inline void* tryUsePage(uint page, uint chunksize)
     {
+      void* chunk_ptr = NULL;
       //increse the fill level
       uint filllevel = atomicAdd((uint*)&(_ptes[page].count), 1);
       //recheck chunck size (it could be that the page got freed in the meanwhile...)
@@ -242,20 +243,24 @@ namespace GPUTools
           uint additional_chunks = 0;
           fullsegments = pagesize / segmentsize;
           additional_chunks = max(0,(int)pagesize - (int)fullsegments*segmentsize - (int)sizeof(uint))/chunksize;
-          if(filllevel < fullsegments * 32 + additional_chunks)
-              return addChunkHierarchy(chunksize, fullsegments, additional_chunks, page);
+          if(filllevel < fullsegments * 32 + additional_chunks){
+            chunk_ptr = addChunkHierarchy(chunksize, fullsegments, additional_chunks, page);
+          }
         }
         else
         {
           uint chunksinpage = min(pagesize / chunksize, 32);
-          if(filllevel < chunksinpage)
-            return addChunkNoHierarchy(chunksize, page, chunksinpage);
+          if(filllevel < chunksinpage){
+            chunk_ptr = addChunkNoHierarchy(chunksize, page, chunksinpage);
+          }
         }
       }
 
       //this one is full/not useable
-      atomicSub((uint*)&(_ptes[page].count), 1);
-      return 0;
+      if(chunk_ptr == NULL)
+        atomicSub((uint*)&(_ptes[page].count), 1);
+
+      return chunk_ptr;
     }
 
     /**
@@ -352,9 +357,8 @@ namespace GPUTools
         uint* onpagemasks = (uint*)(_page[page].data + chunksize*(fullsegments*32 + additional_chunks));
         uint old = atomicAnd(onpagemasks + segment, ~(1 << withinsegment));
 
-        uint elementsinsegment = segment < fullsegments ? 32 : additional_chunks;
-        if(__popc(old) == elementsinsegment)
-          atomicAnd((uint*)&_ptes[page].bitmask, ~(1 << segment));
+        // always do this, since it might fail due to a race-condition with addChunkHierarchy
+        atomicAnd((uint*)&_ptes[page].bitmask, ~(1 << segment));
       }
       else
       {
@@ -700,7 +704,7 @@ namespace GPUTools
         ptes[i].init();
         page[i].init();
       }
-      for(uint i = linid; i < numregions; i+= numregions)
+      for(uint i = linid; i < numregions; i+= threads)
         regions[i] = 0;
 
       if(linid == 0)
@@ -718,6 +722,106 @@ namespace GPUTools
           printf("error in heap alloc: numpages too high\n");
       }
       
+    }
+
+
+    /** counts how many elements of a size fit inside a given page
+     *
+     * Examines a (potentially already used) page to find how many elements
+     * of size chunksize still fit on the page. This includes hierarchically
+     * organized pages and empty pages. The algorithm determines the number
+     * of chunks in the page in a manner similar to the allocation algorithm
+     * of CreationPolicies::Scatter.
+     *
+     * @param page the number of the page to examine. The page needs to be
+     *        formatted with a chunksize and potentially a hierarchy.
+     * @param chunksize the size of element that should be placed inside the
+     *        page. This size must be appropriate to the formatting of the
+     *        page.
+     */
+    __device__ unsigned countFreeChunksInPage(uint32 page, uint32 chunksize){
+      uint32 filledChunks = _ptes[page].count;
+      if(chunksize <= HierarchyThreshold)
+      {
+        uint32 segmentsize = chunksize*32 + sizeof(uint32); //each segment can hold 32 2nd-level chunks
+        uint32 fullsegments = pagesize / segmentsize; //there might be space for more than 32 segments with 32 2nd-level chunks
+        uint32 additional_chunks = max(0,(int)pagesize - (int)fullsegments*segmentsize - (int)sizeof(uint32))/chunksize;
+        uint32 level2Chunks = fullsegments * 32 + additional_chunks;
+
+        //if(filledChunks > 0 || __popc(_ptes[page].bitmask) != 0){
+        //  uint32 freeChunks = level2Chunks-filledChunks;
+        //  uint* onpagemasks = (uint*)(_page[page].data + chunksize*(fullsegments*32 + additional_chunks));
+        //  printf("Page: %u chunksize: %u  segmentsize: %u  additionalchunks: %u  chunksInPage: %u  filledChunks: %u  freeChunks %u  _ptes.bitmask: %X  onPageMasks(%u): %X %X %X %X %X %X %X %X\n",
+        //      page, _ptes[page].chunksize, segmentsize, additional_chunks, level2Chunks, filledChunks, freeChunks, _ptes[page].bitmask, fullsegments+1,
+        //      onpagemasks[0],
+        //      onpagemasks[1],
+        //      onpagemasks[2],
+        //      onpagemasks[3],
+        //      onpagemasks[4],
+        //      onpagemasks[5],
+        //      onpagemasks[6],
+        //      onpagemasks[7]
+        //      );
+        //}
+        return level2Chunks - filledChunks;
+      }else{
+        uint32 chunksinpage = min(pagesize / chunksize, 32); //without hierarchy, there can not be more than 32 chunks
+        return chunksinpage - filledChunks;
+      }
+    }
+
+    /** counts the number of available slots inside the heap
+     *
+     * Searches the heap for all possible locations of an element with size
+     * slotSize. The used traversal algorithms are similar to the allocation
+     * strategy of CreationPolicies::Scatter, to ensure comparable results.
+     * There are 3 different algorithms, based on the size of the requested
+     * slot: 1 slot spans over multiple pages, 1 slot fits in one chunk
+     * within a page, 1 slot fits in a fraction of a chunk.
+     *
+     * @param slotSize the amount of bytes that a single slot accounts for
+     * @param gid the id of the thread. this id does not have to correspond
+     *        with threadId.x, but there must be a continous range of ids
+     *        beginning from 0.
+     * @param stride the stride should be equal to the number of different
+     *        gids (and therefore of value max(gid)-1)
+     */
+    __device__ unsigned getAvailaibleSlotsDeviceFunction(size_t slotSize, int gid, int stride)
+    {
+      unsigned slotcount = 0;
+      if(slotSize < pagesize){ // multiple slots per page
+        for(uint32 currentpage = gid; currentpage < _numpages; currentpage += stride){
+          uint32 maxchunksize = min(pagesize, wastefactor*(uint32)slotSize);
+          uint32 region = currentpage/regionsize;
+          uint32 regionfilllevel = _regions[region];
+
+          uint32 chunksize = _ptes[currentpage].chunksize;
+          if(chunksize >= slotSize && chunksize <= maxchunksize){ //how many chunks left? (each chunk is big enough)
+            slotcount += countFreeChunksInPage(currentpage, chunksize);
+          }else if(chunksize == 0){
+            chunksize  = max((uint32)slotSize, minChunkSize1); //ensure minimum chunk size
+            slotcount += countFreeChunksInPage(currentpage, chunksize); //how many chunks fit in one page?
+          }else{
+            continue; //the chunks on this page are too small for the request :(
+          }
+        }
+      }else{ // 1 slot needs multiple pages
+        if(gid > 0) return 0; //do this serially
+        uint32 pagestoalloc = divup((uint32)slotSize, pagesize);
+        uint32 freecount = 0;
+        for(uint32 currentpage = _numpages; currentpage > 0;){ //this already includes all superblocks
+          --currentpage;
+          if(_ptes[currentpage].chunksize == 0){
+            if(++freecount == pagestoalloc){
+              freecount = 0;
+              ++slotcount;
+            }
+          }else{ // the sequence of free pages was interrupted
+            freecount = 0;
+          }
+        }
+      }
+      return slotcount;
     }
 
     
@@ -754,6 +858,14 @@ namespace GPUTools
   __global__ void initHeap(DeviceHeap<pagesize, accessblocks, regionsize, wastefactor, use_coalescing, resetfreedpages>* heap, void* heapmem, size_t memsize)
   {
     heap->init(heapmem, memsize);
+  }
+
+  template<uint pagesize, uint accessblocks, uint regionsize, uint wastefactor,  bool use_coalescing, bool resetfreedpages>
+  __global__ void getAvailableSlotsKernel(DeviceHeap<pagesize, accessblocks, regionsize, wastefactor, use_coalescing, resetfreedpages>* heap, size_t slotSize, unsigned* slots){
+    int gid       = threadIdx.x + blockIdx.x*blockDim.x;
+    int nWorker   = gridDim.x * blockDim.x;
+    unsigned temp = heap->getAvailaibleSlotsDeviceFunction(slotSize, gid, nWorker);
+    if(temp) atomicAdd(slots, temp);
   }
 
 

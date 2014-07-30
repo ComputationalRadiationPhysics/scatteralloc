@@ -352,9 +352,8 @@ namespace GPUTools
         uint* onpagemasks = (uint*)(_page[page].data + chunksize*(fullsegments*32 + additional_chunks));
         uint old = atomicAnd(onpagemasks + segment, ~(1 << withinsegment));
 
-        uint elementsinsegment = segment < fullsegments ? 32 : additional_chunks;
-        if(__popc(old) == elementsinsegment)
-          atomicAnd((uint*)&_ptes[page].bitmask, ~(1 << segment));
+        // always do this, since it might fail due to a race-condition with addChunkHierarchy
+        atomicAnd((uint*)&_ptes[page].bitmask, ~(1 << segment));
       }
       else
       {

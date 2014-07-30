@@ -229,7 +229,7 @@ namespace GPUTools
      */
     __device__ inline void* tryUsePage(uint page, uint chunksize)
     {
-      void* result=0;
+      void* chunk_ptr = NULL;
       //increse the fill level
       uint filllevel = atomicAdd((uint*)&(_ptes[page].count), 1);
       //recheck chunck size (it could be that the page got freed in the meanwhile...)
@@ -244,26 +244,23 @@ namespace GPUTools
           fullsegments = pagesize / segmentsize;
           additional_chunks = max(0,(int)pagesize - (int)fullsegments*segmentsize - (int)sizeof(uint))/chunksize;
           if(filllevel < fullsegments * 32 + additional_chunks){
-            result = addChunkHierarchy(chunksize, fullsegments, additional_chunks, page);
+            chunk_ptr = addChunkHierarchy(chunksize, fullsegments, additional_chunks, page);
           }
         }
         else
         {
           uint chunksinpage = min(pagesize / chunksize, 32);
           if(filllevel < chunksinpage){
-            result = addChunkNoHierarchy(chunksize, page, chunksinpage);
+            chunk_ptr = addChunkNoHierarchy(chunksize, page, chunksinpage);
           }
         }
       }
 
-      if(result){
-        return result;
-      }else{
-        //this one is full/not useable
+      //this one is full/not useable
+      if(chunk_ptr == NULL)
         atomicSub((uint*)&(_ptes[page].count), 1);
-        return 0;
-      }
 
+      return chunk_ptr;
     }
 
     /**

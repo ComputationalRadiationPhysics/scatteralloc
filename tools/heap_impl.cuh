@@ -51,32 +51,6 @@ void* initHeap(size_t memsize = 8*1024U*1024U)
   return pool;
 }
 
-/** Count, how many elements can be allocated at maximum
- *
- * Takes an input size and determines, how many elements of this size can
- * be allocated with the CreationPolicy Scatter. This will return the
- * maximum number of free slots of the indicated size. It is not
- * guaranteed where these slots are (regarding fragmentation). Therefore,
- * the practically usable number of slots might be smaller. This function
- * is executed in parallel. Speedup can possibly be increased by a higher
- * amount of parallel workers.
- *
- * @param slotSize the size of allocatable elements to count
- */
-static unsigned getAvailableSlotsHost(size_t const slotSize){
-  heap_t* heap;
-  CUDA_CHECKED_CALL(cudaGetSymbolAddress((void**)&heap,theHeap));
-  unsigned h_slots = 0;
-  unsigned* d_slots;
-  cudaMalloc((void**) &d_slots, sizeof(unsigned));
-  cudaMemcpy(d_slots, &h_slots, sizeof(unsigned), cudaMemcpyHostToDevice);
-
-  GPUTools::getAvailableSlotsKernel<<<64,256>>>(heap,slotSize, d_slots);
-
-  cudaMemcpy(&h_slots, d_slots, sizeof(unsigned), cudaMemcpyDeviceToHost);
-  cudaFree(d_slots);
-  return h_slots;
-}
 
 
 

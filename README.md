@@ -45,7 +45,9 @@ This repository is a clone of the **ScatterAlloc** project from the
 group at [Institute for Computer Graphics and Vision](http://www.icg.tugraz.at),
 TU Graz (kudos!).
 
-We fixed minor bugs in this repository.
+We fixed and backported ~~minor~~ bugs we found while developing
+[mallocMC](https://github.com/ComputationalRadiationPhysics/mallocMC)
+to this repository.
 
 
 Literature
